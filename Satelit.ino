@@ -1,23 +1,24 @@
 #include <Wire.h>
+#include <SPI.h>
+#include <LoRa.h>
 #include <Adafruit_BMP085.h>
 #include "esp_camera.h"
 
+// ===== BMP180 =====
 Adafruit_BMP085 bmp;
-
 bool bmpReady = false;
-bool camReady = false;
 
-unsigned long lastCapture = 0;
-const unsigned long captureInterval = 15000;
-
-String riskLevel = "LOW";
+// ===== LoRa =====
+#define SS 5
+#define RST 14
+#define DIO0 26
 
 // ===== CAMERA CONFIG AI Thinker =====
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
-#define SIOD_GPIO_NUM     26
-#define SIOC_GPIO_NUM     27
+#define SIOD_GPIO_NUM     27
+#define SIOC_GPIO_NUM     25
 #define Y9_GPIO_NUM       35
 #define Y8_GPIO_NUM       34
 #define Y7_GPIO_NUM       39
@@ -26,12 +27,22 @@ String riskLevel = "LOW";
 #define Y4_GPIO_NUM       19
 #define Y3_GPIO_NUM       18
 #define Y2_GPIO_NUM        5
-#define VSYNC_GPIO_NUM    25
+#define VSYNC_GPIO_NUM    22
 #define HREF_GPIO_NUM     23
-#define PCLK_GPIO_NUM     22
+#define PCLK_GPIO_NUM     26
+
+bool camReady = false;
+unsigned long lastCapture = 0;
+unsigned long lastTransmit = 0;
+
+const unsigned long captureInterval = 20000;   // Foto tiap 20 detik (simulasi)
+const unsigned long transmitInterval = 8000;   // Kirim data tiap 8 detik
+
+String riskLevel = "LOW";
 
 void setupCamera() {
   camera_config_t config;
+
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
   config.pin_d0 = Y2_GPIO_NUM;
@@ -57,89 +68,66 @@ void setupCamera() {
   config.jpeg_quality = 12;
   config.fb_count = 1;
 
-  esp_err_t err = esp_camera_init(&config);
-
-  if (err == ESP_OK) {
+  if (esp_camera_init(&config) == ESP_OK) {
     camReady = true;
   }
-}
-
-void bootIntro() {
-  Serial.println();
-  Serial.println("==================================");
-  Serial.println("   WIT WIT SAWIT SPACE SYSTEM");
-  Serial.println("==================================");
-  delay(800);
-
-  Serial.println("Booting Satellite Firmware...");
-  delay(800);
-
-  Serial.println("Initializing Modules...");
-  delay(800);
-
-  Serial.print("BMP180 Sensor: ");
-  if (bmpReady) Serial.println("READY ✅");
-  else Serial.println("NOT DETECTED ❌");
-  delay(500);
-
-  Serial.print("Camera Module: ");
-  if (camReady) Serial.println("READY ✅");
-  else Serial.println("FAILED ❌ (Simulator OK)");
-  delay(500);
-
-  Serial.println("----------------------------------");
-  Serial.println("System Status: OPERATIONAL 🚀");
-  Serial.println("----------------------------------");
-  Serial.println();
 }
 
 void setup() {
   Serial.begin(115200);
   Wire.begin(14, 15);
 
-  if (bmp.begin()) {
-    bmpReady = true;
-  }
+  if (bmp.begin()) bmpReady = true;
+
+  LoRa.setPins(SS, RST, DIO0);
+  LoRa.begin(433E6);
 
   setupCamera();
-  bootIntro();
+
+  Serial.println("WIT WIT SAWIT SPACE SATELLITE READY 🚀");
 }
 
 void loop() {
 
-  float temperature = bmp.readTemperature();
-  float pressure = bmp.readPressure() / 100.0;
+  float temperature = bmpReady ? bmp.readTemperature() : 0;
+  float pressure = bmpReady ? bmp.readPressure() / 100.0 : 0;
 
+  // ===== RISK LOGIC =====
   if (temperature > 70) riskLevel = "HIGH";
   else if (temperature > 40) riskLevel = "MEDIUM";
   else riskLevel = "LOW";
 
-  Serial.println("---- TELEMETRY ----");
-  Serial.print("Temp: ");
-  Serial.println(temperature);
-  Serial.print("Pressure: ");
-  Serial.println(pressure);
-  Serial.print("Risk: ");
-  Serial.println(riskLevel);
+  // ===== TRANSMIT TELEMETRY =====
+  if (millis() - lastTransmit > transmitInterval) {
+    lastTransmit = millis();
 
+    LoRa.beginPacket();
+    LoRa.print("Temp:");
+    LoRa.print(temperature);
+    LoRa.print(",Pressure:");
+    LoRa.print(pressure);
+    LoRa.print(",Risk:");
+    LoRa.print(riskLevel);
+    LoRa.endPacket();
+
+    Serial.println("📡 Data Sent to Earth");
+  }
+
+  // ===== CAMERA SNAPSHOT =====
   if (millis() - lastCapture > captureInterval) {
     lastCapture = millis();
 
-    if (!camReady) {
-      Serial.println("⚠ Camera Offline (Simulated)");
-    } else {
+    if (camReady) {
       camera_fb_t *fb = esp_camera_fb_get();
 
-      if (!fb) {
-        Serial.println("⚠ Capture Failed (Simulator)");
-      } else {
-        Serial.println("📸 Forest Snapshot Captured!");
-        Serial.print("Image Size: ");
-        Serial.println(fb->len);
+      if (fb) {
+        Serial.println("📸 Forest Image Captured");
         esp_camera_fb_return(fb);
+      } else {
+        Serial.println("⚠ Camera Capture Failed (Simulator)");
       }
     }
   }
 
-  delay(3000);
+  delay(2000);
 }
